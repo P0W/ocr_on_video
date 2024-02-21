@@ -1,0 +1,8 @@
+reorder-python-imports
+black
+scipy
+opencv-python
+numpy
+tqdm
+Pillow
+pytesseract
