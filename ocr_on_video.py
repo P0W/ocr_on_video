@@ -24,7 +24,11 @@ import tqdm
 from PIL import Image
 from PIL import ImageDraw
 from PIL import ImageFont
-from profanity_check import predict_prob
+
+try:
+    from profanity_check import predict_prob
+except ImportError:
+    predict_prob = lambda x: [0.0]
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
@@ -111,9 +115,9 @@ class VideoOCR:
         self.sample_rate = sample_rate
         self.debug_dir = debug_dir
 
-        ## create if not exists the debug directory
-        if not os.path.exists(self.debug_dir):
-            os.makedirs(self.debug_dir)
+        ## create if not exists the debug directory, creat the entire directory tree
+        if pathlib.Path(self.debug_dir).exists() is False:
+            pathlib.Path(self.debug_dir).mkdir(parents=True, exist_ok=True)
         self.frames = []
         self.analyze_frames = []
         self.pbar = self._NoOpProgressBar()
@@ -161,7 +165,7 @@ class VideoOCR:
             return
         for frame in frames:
             cv.imwrite(
-                os.path.join(debug_dir, f"{frame.frame_number}.png"), frame.image
+                os.path.join(debug_dir, f"{frame.frame_number}.jpg"), frame.image
             )
             with open(
                 os.path.join(debug_dir, f"{frame.frame_number}.txt"),
@@ -207,7 +211,6 @@ class VideoOCR:
         return zip(a, b)
 
     def _are_similar_frame(self, f1, f2):
-        ##return False
         diff = np.count_nonzero(self.phash(f1.image) != self.phash(f2.image))
         return diff <= 2
 
@@ -259,7 +262,6 @@ class VideoOCR:
 
     def _ocr(self, frame):
         pil_image = Image.fromarray(frame.image)
-        # text = pytesseract.image_to_string(pil_image)
         boxes = pytesseract.image_to_data(pil_image)  # , config=r"--psm 11 --oem 1")
         frame.text = ""
         for x, b in enumerate(boxes.splitlines()):
@@ -336,12 +338,11 @@ class VideoOCR:
         for index in progress_bar:
             frame_written = False
             if index in look_up:
-                file_name = f"{look_up[index]['end']}.png"
+                file_name = f"{look_up[index]['end']}.jpg"
                 count_frames = look_up[index]["count"]
                 image = os.path.join(output_folder, file_name)
                 if os.path.exists(image):
                     if original_frames > 0:
-                        # self.logger.info(f"Original frames written: {original_frames}")
                         progress_bar.set_postfix(
                             {"Original frames written": original_frames}, refresh=True
                         )
@@ -361,9 +362,6 @@ class VideoOCR:
                     index += count_frames
                     frame_written = True
                 else:
-                    # self.logger.info(
-                    #     f"Image {image} does not exist, for starting frame {index}. Skipping."
-                    # )
                     progress_bar.set_postfix(
                         {"Image does not exist, skipping frame": index}, refresh=True
                     )
@@ -379,7 +377,7 @@ class VideoOCR:
         out.release()
         cv.destroyAllWindows()
 
-    def run_ffmpeg_command_v2(
+    def run_ffmpeg_command(
         self, original_video_path, output_video_path, output_with_audio_video
     ):
         """Runs the ffmpeg command to add audio to the annotated video."""
@@ -414,7 +412,7 @@ class VideoOCR:
         # Load all PNG images from the specified directory
         for frame in frames:
             if frame.profanity_prob > 0.5:
-                filename = f"{images_folder}/{frame.frame_number}.png"
+                filename = f"{images_folder}/{frame.frame_number}.jpg"
                 img = Image.open(filename)
                 images.append(
                     {
@@ -428,9 +426,6 @@ class VideoOCR:
         num_rows = min(row_size, len(images))
         num_cols = min(col_size, (len(images) + row_size - 1) // row_size)
 
-        # Resize images
-        # resized_images = [{ "img": img.resize(output_size, Image.LANCZOS),
-        #                   for item in images]
         resized_images = [
             {
                 "img": item["img"].resize(output_size, Image.LANCZOS),
@@ -460,7 +455,7 @@ class VideoOCR:
             canvas.paste(img, (col * output_size[0], row * output_size[1]))
 
         # Save the final image
-        canvas.save(f"{images_folder}/output_collage.png")
+        canvas.save(f"{images_folder}/output_collage.jpg")
 
     def run(self):
         """Runs the OCR on the video and annotates it."""
@@ -489,7 +484,7 @@ class VideoOCR:
                 input_video,
                 output_video,
             )
-            self.run_ffmpeg_command_v2(input_video, output_video_temp, output_video)
+            self.run_ffmpeg_command(input_video, output_video_temp, output_video)
             ## remove the temp file
             os.remove(output_video_temp)
         except Exception as e:  ## pylint: disable=broad-exception-caught
