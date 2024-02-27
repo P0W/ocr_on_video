@@ -9,7 +9,7 @@ numpy
 tqdm
 Pillow
 pytesseract
-profanity_check
+alt-profanity-check
 ## For creating a web service, profanity_check do not work with fastapi dependencies on 3.12+
 pydantic
 fastapi

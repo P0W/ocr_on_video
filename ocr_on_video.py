@@ -2,13 +2,14 @@
 
 ## Author: Prashant Srivastava
 ## Dated: February 21st, 2024
-
 import argparse
 import datetime
+import json
 import logging
 import multiprocessing
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import traceback
@@ -24,11 +25,8 @@ import tqdm
 from PIL import Image
 from PIL import ImageDraw
 from PIL import ImageFont
+from profanity_check import predict_prob
 
-try:
-    from profanity_check import predict_prob
-except ImportError:
-    predict_prob = lambda x: [0.0]
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
@@ -109,11 +107,13 @@ class VideoOCR:
         sample_rate=1,
         debug_dir="",
         annotate_only=False,
+        highligh_text=False,
     ):
         self.filepath = input_video
         self.output_video = output_video
         self.sample_rate = sample_rate
         self.debug_dir = debug_dir
+        self.highligh_text = highligh_text
 
         ## create if not exists the debug directory, creat the entire directory tree
         if pathlib.Path(self.debug_dir).exists() is False:
@@ -233,6 +233,21 @@ class VideoOCR:
             self.logger.info("Profanity : %.2f", frame.profanity_prob)
         self.logger.info("-" * terminal_width)
 
+        ## filter out the frames with profanity and write to a file
+        frames_with_profanity = {
+            frame.frame_number: {
+                "text": frame.text,
+                "profanity_prob": frame.profanity_prob,
+                "timestamp": self._get_time_stamp(frame.ts_second),
+            }
+            for frame in frames
+            if frame.profanity_prob > 0.5
+        }
+
+        file_path = os.path.join(self.debug_dir, "frames_with_profanity.json")
+        with open(file_path, "w", encoding="utf-8") as fh:
+            json.dump(frames_with_profanity, fh, indent=2)
+
         ## write self.analyze_frames to a file
         with open(
             os.path.join(self.debug_dir, "analyze_frames.txt"), "w", encoding="utf-8"
@@ -268,17 +283,20 @@ class VideoOCR:
             if x != 0:
                 b = b.split()
                 if len(b) == 12:
-                    (x, y, w, h) = map(int, b[6:10])
-                    cv.rectangle(frame.image, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                    cv.putText(
-                        frame.image,
-                        b[11],
-                        (x, y),
-                        cv.FONT_HERSHEY_SIMPLEX,
-                        1,
-                        (0, 255, 0),  # Green color in BGR
-                        2,
-                    )
+                    if self.highligh_text:
+                        (x, y, w, h) = map(int, b[6:10])
+                        cv.rectangle(
+                            frame.image, (x, y), (x + w, y + h), (0, 255, 0), 2
+                        )
+                        cv.putText(
+                            frame.image,
+                            b[11],
+                            (x, y),
+                            cv.FONT_HERSHEY_SIMPLEX,
+                            1,
+                            (0, 255, 0),  # Green color in BGR
+                            2,
+                        )
                     frame.text += b[11] + " "
         frame_prediction = predict_prob([frame.text])
         if frame_prediction[0] > 0.5:
@@ -287,9 +305,9 @@ class VideoOCR:
                 frame.image,
                 f"Profanity Prob:{frame.profanity_prob:.2f}",
                 (10, 50),
-                cv.FONT_ITALIC,
+                cv.FONT_HERSHEY_SIMPLEX,
                 1,
-                (0, 0, 139),  # Dark red in BGR
+                (0, 255, 0),  # Green color in BGR
                 3,  # Increase thickness to make text appear bolder
             )
         self.pbar.update()
@@ -464,12 +482,15 @@ class VideoOCR:
                 self.pbar = progress_bar
                 self.frames = self.perform_video_ocr()
             self._display_frames(self.frames)
+            self.prepare_bundle()
             try:
                 self.create_canvas(self.frames, self.debug_dir, 5, 5, (200, 200))
             except Exception as e:  ## pylint: disable=broad-exception-caught
                 self.logger.error("Error creating canvas: %s", e)
             if not os.path.exists(self.debug_dir):
                 os.makedirs(self.debug_dir)
+        if self.output_video == "skip":
+            return
         try:
             input_video = self.filepath
             output_video = self.output_video
@@ -491,6 +512,28 @@ class VideoOCR:
             ## display entire stack trace
             self.logger.error(full_stack())
             self.logger.error("Error annotating video: %s", e)
+
+    def prepare_bundle(self):
+        """Prepare a bundle of frames with profanity for debugging."""
+        ## read frames_with_profanity.json and copy the frames to a folder
+        with open(
+            os.path.join(self.debug_dir, "frames_with_profanity.json"),
+            "r",
+            encoding="utf-8",
+        ) as f:
+            frames_with_profanity = json.load(f)
+        ## create a folder to copy the frames
+        frames_folder = os.path.join(self.debug_dir, "frames_with_profanity")
+        if not pathlib.Path(frames_folder).exists():
+            pathlib.Path(frames_folder).mkdir(parents=True, exist_ok=True)
+        for frame in frames_with_profanity.keys():
+            frame_image = os.path.join(self.debug_dir, f"{frame}.jpg")
+            if os.path.exists(frame_image):
+                shutil.copy(frame_image, frames_folder)
+        ## copy the json file to the folder
+        shutil.copy(
+            os.path.join(self.debug_dir, "frames_with_profanity.json"), frames_folder
+        )
 
 
 if __name__ == "__main__":
@@ -520,6 +563,11 @@ if __name__ == "__main__":
         default="",
         help="If provided, writes the annotated video here",
     )
+    parser.add_argument(
+        "--highlight_text",
+        action="store_true",
+        help="If provided, highlights the text in the annotated video",
+    )
     args = parser.parse_args()
 
     logging.info("Running OCR on video %s", args.input_video)
@@ -530,5 +578,6 @@ if __name__ == "__main__":
         args.sample_rate,
         args.debug_dir,
         args.annotate_only,
+        args.highlight_text,
     )
     video_ocr.run()
